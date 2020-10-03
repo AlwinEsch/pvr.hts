@@ -1,5 +1,6 @@
 7.1.5
 - Fix 'pvr.hts' appearing twice in every addon log message
+- Fix calculation of start time, stop time and file size for multi-file recordings
 
 7.1.4
 - Fix deadlock while reconnecting to backend after a backend response timeout (Fixes #465)
