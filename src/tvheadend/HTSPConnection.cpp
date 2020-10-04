@@ -255,8 +255,7 @@ void HTSPConnection::Disconnect()
   /* Close socket */
   if (m_socket)
   {
-    m_socket->Shutdown();
-    m_socket->Close();
+    m_socket->close();
   }
 
   /* Signal all waiters and erase messages */
@@ -271,27 +270,27 @@ void HTSPConnection::Disconnect()
 bool HTSPConnection::ReadMessage()
 {
   /* Read 4 byte len */
-  uint8_t lb[4];
-  size_t len = m_socket->Read(&lb, sizeof(lb));
-  if (len != sizeof(lb))
+  kissnet::buffer<4> lb;
+  const auto [data_size, status_code] = m_socket->recv(lb);
+  if (data_size != lb.size())
     return false;
 
-  len = (lb[0] << 24) + (lb[1] << 16) + (lb[2] << 8) + lb[3];
+  int len = (std::to_integer<int>(lb[0]) << 24) + (std::to_integer<int>(lb[1]) << 16) + (std::to_integer<int>(lb[2]) << 8) + std::to_integer<int>(lb[3]);
 
   /* Read rest of packet */
-  uint8_t* buf = static_cast<uint8_t*>(malloc(len));
-  size_t cnt = 0;
+  std::byte* buf = new std::byte[len];
+  ssize_t cnt = 0;
   while (cnt < len)
   {
-    ssize_t r = m_socket->Read(buf + cnt, len - cnt, Settings::GetInstance().GetResponseTimeout());
-    if (r < 0)
+    const auto [data_size, status_code] = m_socket->recv(buf + cnt, len - cnt/*, Settings::GetInstance().GetResponseTimeout()*/);
+    if (data_size < 0)
     {
-      Logger::Log(LogLevel::LEVEL_ERROR, "failed to read packet (%s)",
-                  m_socket->GetError().c_str());
+      Logger::Log(LogLevel::LEVEL_ERROR, "failed to read packet (%i)",
+                  status_code.value);
       free(buf);
       return false;
     }
-    cnt += r;
+    cnt += data_size;
   }
 
   /* Deserialize */
@@ -361,13 +360,13 @@ bool HTSPConnection::SendMessage0(const char* method, htsmsg_t* msg)
     return false;
 
   /* Send data */
-  ssize_t c = m_socket->Write(buf, len);
+  const auto [data_size, status_code] = m_socket->send(static_cast<std::byte*>(buf), len);
   free(buf);
 
-  if (c != static_cast<ssize_t>(len))
+  if (data_size != static_cast<ssize_t>(len))
   {
-    Logger::Log(LogLevel::LEVEL_ERROR, "Command %s failed: failed to write (%s)", method,
-                m_socket->GetError().c_str());
+    Logger::Log(LogLevel::LEVEL_ERROR, "Command %s failed: failed to write (%i)", method,
+                status_code);
     if (!m_suspended)
       Disconnect();
 
@@ -635,7 +634,7 @@ void* HTSPConnection::Process()
         delete m_socket;
 
       m_connListener.Disconnected();
-      m_socket = new CTcpSocket(host.c_str(), port);
+      m_socket = new kissnet::tcp_socket(kissnet::endpoint(host, port));
       m_ready = false;
       m_seq = 0;
       if (m_challenge)
@@ -678,7 +677,7 @@ void* HTSPConnection::Process()
 
     /* Connect */
     Logger::Log(LogLevel::LEVEL_TRACE, "waiting for connection...");
-    if (!m_socket->Open(timeout))
+    if (!m_socket->connect())
     {
       /* Unable to connect */
       Logger::Log(LogLevel::LEVEL_ERROR, "unable to connect to %s:%d", host.c_str(), port);

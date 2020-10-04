@@ -18,9 +18,11 @@ extern "C"
 }
 
 #include "kodi/addon-instance/pvr/General.h"
-#include "p8-platform/sockets/tcp.h"
+// #include "p8-platform/sockets/tcp.h"
 #include "p8-platform/threads/mutex.h"
 #include "p8-platform/threads/threads.h"
+
+#include "../kissnet.hpp"
 
 namespace tvheadend
 {
@@ -97,7 +99,8 @@ private:
   };
 
   IHTSPConnectionListener& m_connListener;
-  P8PLATFORM::CTcpSocket* m_socket;
+//   P8PLATFORM::CTcpSocket* m_socket;
+  kissnet::tcp_socket* m_socket;
   mutable P8PLATFORM::CMutex m_mutex;
   HTSPRegister* m_regThread;
   P8PLATFORM::CCondition<volatile bool> m_regCond;
