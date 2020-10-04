@@ -72,7 +72,7 @@ void CTvheadend::Stop()
     dmx->Close();
 
   m_conn->Stop();
-  StopThread(0);
+  StopThread(true);
 }
 
 /* **************************************************************************
@@ -1706,16 +1706,16 @@ void CTvheadend::CloseExpiredSubscriptions()
   }
 }
 
-void* CTvheadend::Process()
+void CTvheadend::Process()
 {
-  while (!IsStopped())
+  while (!m_threadStop)
   {
     /* Check Q */
     // this is a bit horrible, but meh
     HTSPMessage msg = {};
     bool bSuccess = m_queue.Pop(msg, 2000);
 
-    if (IsStopped())
+    if (m_threadStop)
       continue;
 
     // check for expired predictive tuning subscriptions and close those
@@ -1813,7 +1813,7 @@ void* CTvheadend::Process()
     /* Manual delete rather than waiting */
     msg.ClearMessage();
 
-    if (IsStopped())
+    if (m_threadStop)
       continue;
 
     /* Process events
@@ -1842,8 +1842,6 @@ void* CTvheadend::Process()
       }
     }
   }
-
-  return nullptr;
 }
 
 void CTvheadend::TriggerChannelGroupsUpdate()
