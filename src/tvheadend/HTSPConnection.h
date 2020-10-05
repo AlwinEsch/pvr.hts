@@ -18,9 +18,11 @@ extern "C"
 }
 
 #include "kodi/addon-instance/pvr/General.h"
-#include "p8-platform/sockets/tcp.h"
 #include "p8-platform/threads/mutex.h"
 #include "p8-platform/threads/threads.h"
+
+#include <asio.hpp>
+#include <chrono>
 
 namespace tvheadend
 {
@@ -96,8 +98,27 @@ private:
     HTSPConnection* m_conn;
   };
 
+  bool Run(std::chrono::steady_clock::duration timeout)
+  {
+    // Restart the io_context, as it may have been left in the "stopped" state
+    // by a previous operation.
+    m_ioContext.restart();
+
+    // Block until the asynchronous operation has completed, or timed out. If
+    // the pending asynchronous operation is a composed operation, the deadline
+    // applies to the entire operation, rather than individual operations on
+    // the socket.
+    m_ioContext.run_for(timeout);
+
+    // If the asynchronous operation completed successfully then the io_context
+    // would have been stopped due to running out of work. If it was not
+    // stopped, then the io_context::run_for call must have timed out.
+    return m_ioContext.stopped();
+  }
+
   IHTSPConnectionListener& m_connListener;
-  P8PLATFORM::CTcpSocket* m_socket;
+  asio::io_context m_ioContext;
+  asio::ip::tcp::socket m_ioSocket{m_ioContext};
   mutable P8PLATFORM::CMutex m_mutex;
   HTSPRegister* m_regThread;
   P8PLATFORM::CCondition<volatile bool> m_regCond;

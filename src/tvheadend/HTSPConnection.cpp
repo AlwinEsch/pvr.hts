@@ -87,7 +87,6 @@ private:
 
 HTSPConnection::HTSPConnection(IHTSPConnectionListener& connListener)
   : m_connListener(connListener),
-    m_socket(nullptr),
     m_regThread(new HTSPRegister(this)),
     m_ready(false),
     m_seq(0),
@@ -253,11 +252,7 @@ void HTSPConnection::Disconnect()
   CLockObject lock(m_mutex);
 
   /* Close socket */
-  if (m_socket)
-  {
-    m_socket->Shutdown();
-    m_socket->Close();
-  }
+  m_ioSocket.close();
 
   /* Signal all waiters and erase messages */
   m_messages.clear();
@@ -270,28 +265,42 @@ void HTSPConnection::Disconnect()
  */
 bool HTSPConnection::ReadMessage()
 {
+  const auto timeout = std::chrono::milliseconds(Settings::GetInstance().GetResponseTimeout());
+
+  uint8_t* buf = nullptr;
+  size_t len = -1;
+
   /* Read 4 byte len */
   uint8_t lb[4];
-  size_t len = m_socket->Read(&lb, sizeof(lb));
-  if (len != sizeof(lb))
-    return false;
+  asio::async_read(m_ioSocket, asio::buffer(lb, sizeof(lb)),
+      [&](const std::error_code& error, std::size_t)
+      {
+        if (!error)
+        {
+          len = (lb[0] << 24) + (lb[1] << 16) + (lb[2] << 8) + lb[3];
+          if (len < 0)
+            return;
 
-  len = (lb[0] << 24) + (lb[1] << 16) + (lb[2] << 8) + lb[3];
-
-  /* Read rest of packet */
-  uint8_t* buf = static_cast<uint8_t*>(malloc(len));
-  size_t cnt = 0;
-  while (cnt < len)
+          buf = static_cast<uint8_t*>(malloc(len));
+          asio::async_read(m_ioSocket, asio::buffer(buf, len),
+              [&](const std::error_code& error, std::size_t)
+              {
+                if (error)
+                {
+                  Logger::Log(LogLevel::LEVEL_ERROR, "Read message package failed: %s", error.message().c_str());
+                }
+              });
+        }
+        else
+        {
+          Logger::Log(LogLevel::LEVEL_ERROR, "Read message size failed: %s", error.message().c_str());
+        }
+      });
+  if (!Run(timeout) || len < 0 || buf == nullptr)
   {
-    ssize_t r = m_socket->Read(buf + cnt, len - cnt, Settings::GetInstance().GetResponseTimeout());
-    if (r < 0)
-    {
-      Logger::Log(LogLevel::LEVEL_ERROR, "failed to read packet (%s)",
-                  m_socket->GetError().c_str());
+    if (buf)
       free(buf);
-      return false;
-    }
-    cnt += r;
+    return false;
   }
 
   /* Deserialize */
@@ -361,13 +370,21 @@ bool HTSPConnection::SendMessage0(const char* method, htsmsg_t* msg)
     return false;
 
   /* Send data */
-  ssize_t c = m_socket->Write(buf, len);
+  asio::async_write(m_ioSocket,
+      asio::buffer(buf, len),
+      [&](const std::error_code& error, std::size_t)
+      {
+        if (error)
+        {
+          Logger::Log(LogLevel::LEVEL_ERROR, "send message package failed: %s", error.message().c_str());
+        }
+      });
+
   free(buf);
 
-  if (c != static_cast<ssize_t>(len))
+  if (!Run(std::chrono::milliseconds(Settings::GetInstance().GetResponseTimeout())))
   {
-    Logger::Log(LogLevel::LEVEL_ERROR, "Command %s failed: failed to write (%s)", method,
-                m_socket->GetError().c_str());
+    Logger::Log(LogLevel::LEVEL_ERROR, "Command %s failed: failed to write", method);
     if (!m_suspended)
       Disconnect();
 
@@ -631,11 +648,9 @@ void* HTSPConnection::Process()
     /* Create socket (ensure mutex protection) */
     {
       CLockObject lock(m_mutex);
-      if (m_socket)
-        delete m_socket;
+      m_ioSocket.close();
 
       m_connListener.Disconnected();
-      m_socket = new CTcpSocket(host.c_str(), port);
       m_ready = false;
       m_seq = 0;
       if (m_challenge)
@@ -678,10 +693,24 @@ void* HTSPConnection::Process()
 
     /* Connect */
     Logger::Log(LogLevel::LEVEL_TRACE, "waiting for connection...");
-    if (!m_socket->Open(timeout))
+
+    // Resolve the host name and service to a list of endpoints.
+    auto endpoints = asio::ip::tcp::resolver(m_ioContext).resolve(host, std::to_string(port));
+
+    std::error_code error;
+    asio::async_connect(m_ioSocket, endpoints,
+        [&](const std::error_code& result_error,
+            const asio::ip::tcp::endpoint& /*result_endpoint*/)
+        {
+          error = result_error;
+        });
+
+    // Run the operation until it completes, or until the timeout.
+    bool ret = Run(std::chrono::milliseconds(timeout));
+    if (!ret || error)
     {
       /* Unable to connect */
-      Logger::Log(LogLevel::LEVEL_ERROR, "unable to connect to %s:%d", host.c_str(), port);
+      Logger::Log(LogLevel::LEVEL_ERROR, "unable to connect to %s:%d, error: %s", host.c_str(), port, error.message().c_str());
       SetState(PVR_CONNECTION_STATE_SERVER_UNREACHABLE);
 
       // Retry a few times with a short interval, after that with the default timeout
