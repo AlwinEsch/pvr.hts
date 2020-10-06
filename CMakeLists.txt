@@ -97,9 +97,6 @@ list(APPEND HTS_SOURCES
 add_subdirectory(lib/libhts)
 
 set(DEPLIBS hts)
-if(WIN32)
-  list(APPEND DEPLIBS ws2_32)
-endif()
 
 build_addon(pvr.hts HTS DEPLIBS)
 
